@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ArrowUpRight, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,16 +25,6 @@ const MODEL_OPTIONS = [
 
 export function KeySettings() {
   const m = useMutual();
-  const [draft, setDraft] = useState(m.apiKey);
-  const [model, setModel] = useState(m.model);
-
-  useEffect(() => {
-    if (m.keyOpen) {
-      setDraft(m.apiKey);
-      setModel(m.model);
-    }
-  }, [m.keyOpen, m.apiKey, m.model]);
-
   const connected = Boolean(m.apiKey);
 
   return (
@@ -53,7 +43,21 @@ export function KeySettings() {
               Mutual runs its research and connection engine on Google Gemini with Google Search grounding. Use your own key, which is free from Google AI Studio.
             </DialogDescription>
           </DialogHeader>
+          {m.keyOpen && <KeyForm />}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
 
+// Mounted only while the dialog is open, so its draft state starts from the saved values each time.
+function KeyForm() {
+  const m = useMutual();
+  const [draft, setDraft] = useState(m.apiKey);
+  const [model, setModel] = useState(m.model);
+  const connected = Boolean(m.apiKey);
+
+  return (
           <form
             className="space-y-4"
             onSubmit={(e) => {
@@ -127,8 +131,5 @@ export function KeySettings() {
               </Button>
             </DialogFooter>
           </form>
-        </DialogContent>
-      </Dialog>
-    </>
   );
 }

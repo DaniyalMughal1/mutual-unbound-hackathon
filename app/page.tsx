@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { MutualProvider, useMutual } from "@/lib/store";
 import { SetupView } from "@/components/setup-view";
 import { LeadsView } from "@/components/leads-view";
@@ -21,13 +21,9 @@ export default function Home() {
 
 function Workspace() {
   const m = useMutual();
-  const [view, setView] = useState<View>("setup");
-
-  useEffect(() => {
-    if (m.hydrated && m.leads.length > 0) setView("leads");
-    // only on first hydration
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [m.hydrated]);
+  const [chosenView, setView] = useState<View | null>(null);
+  // Until the user picks a view, returning users land on their people.
+  const view: View = chosenView ?? (m.hydrated && m.leads.length > 0 ? "leads" : "setup");
 
   const inPipeline = m.leads.filter((l) => ["approved", "sent", "replied"].includes(l.status)).length;
   const tabs: { id: View; label: string; count?: number }[] = [
