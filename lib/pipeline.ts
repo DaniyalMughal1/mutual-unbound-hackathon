@@ -132,6 +132,7 @@ async function webResearch(
   queries: string[],
   onSearch: ((q: string) => void) | undefined,
   perQuery: number,
+  mustMatch: string[] = [],
 ): Promise<Findings> {
   queries.forEach((q) => onSearch?.(q));
   const settled = await Promise.allSettled(queries.map((q) => tavilySearch(ctx.tavilyKey!, q, perQuery)));
@@ -151,7 +152,14 @@ async function webResearch(
       }
     }
   }
-  const top = hits.slice(0, 12);
+  // When we know who we're researching, drop name collisions (other people sharing a first name, unrelated companies).
+  const patterns = mustMatch
+    .filter((t) => t.trim().length >= 3)
+    .map((t) => new RegExp(`\\b${t.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"));
+  const relevant = patterns.length
+    ? hits.filter((h) => patterns.some((p) => p.test(`${h.title} ${h.content} ${h.url}`)))
+    : hits;
+  const top = (relevant.length ? relevant : hits).slice(0, 12);
   return {
     text: top.map((h, i) => `[${i}] ${h.title} (${h.url})\n${h.content}`).join("\n\n"),
     queries,
@@ -330,7 +338,7 @@ export async function discoverLeads(
 
   const { leads } = await jsonCall(ctx.llm, {
     system: `Extract outreach leads from web search findings. Only include people explicitly named in the findings with a role and company. ${ETHICS}`,
-    prompt: `<findings>\n${found.text}\n</findings>\n\nReturn up to ${count} leads matching this target: ${target.description}. Prefer people with a genuine reason to talk to this user: ${profile.headline}. whyTarget: one sentence on how they match, citing what the findings say. location: "" if unknown. sourceIndices: the [n] numbers of the findings that mention this person${found.numbered ? "" : " (use [] because these findings are not numbered)"}.`,
+    prompt: `<findings>\n${found.text}\n</findings>\n\nReturn up to ${count} leads matching this target: ${target.description}. Order leads best first: closest overlap with this user's projects and skills (${profile.projects.map((p) => p.name).join(", ")}; ${profile.skills.slice(0, 6).join(", ")}), and enough public detail in the findings to personalize a message. whyTarget: one sentence on how they match, citing what the findings say. location: "" if unknown. sourceIndices: the [n] numbers of the findings that mention this person${found.numbered ? "" : " (use [] because these findings are not numbered)"}.`,
     schema: DiscoverySchema,
   });
 
@@ -370,11 +378,18 @@ export async function researchLead(
 ): Promise<Findings> {
   if (ctx.tavilyKey) {
     const who = `"${lead.name}"`;
+    const last = lead.name.trim().split(/\s+/).at(-1) ?? "";
     return webResearch(
       ctx,
-      [`${who} ${lead.company}`, `${who} interview OR podcast OR talk OR blog`, `${lead.company} startup funding product news`],
+      [
+        `${who} ${lead.company}`,
+        `${who} ${lead.company} interview OR podcast OR talk OR blog`,
+        `${lead.company} startup funding product news`,
+      ],
       onSearch,
       5,
+      // Short or generic company names ("Page") would match everything, so only distinctive ones count.
+      [lead.name, last, lead.company.length >= 5 ? lead.company : ""],
     );
   }
   const found = await groundedSearch(ctx.llm, {
@@ -410,12 +425,12 @@ export async function analyzeConnection(
 First, "research": structure the web findings about the lead into a dossier (bullets under 25 words). Search results can include other people with the same name: only use findings that clearly match this lead's company or role. contactHints: public channels only.
 
 Then, "analysis":
-- A connection is only valid if it is supported on BOTH sides: youEvidence must come from the user profile, themEvidence from the findings. Quote or tightly paraphrase. Never invent.
+- A connection is only valid if it is supported on BOTH sides: youEvidence must come from the user profile, themEvidence from the findings. Quote or tightly paraphrase. Never invent. youEvidence must be a concrete fact (project, work, education, skill, publication), never the user's goals or wishes.
 - Rank connections strongest first, 2-4 of them. Specific overlaps (same technical problem, same school program, something they said that the user's work answers) beat generic ones (both like AI). Mark generic ones "weak".
 - sourceIndex: the number of the source backing themEvidence, or -1.
 - fitScore (0-100) must be justified by the connections; weak or thin evidence means a low score.
 - headline: the strongest genuine connection in one sentence, phrased to the user ("You both...").
-- The message must read as individually written by the user: open with the strongest specific connection, say who the user is in one clause, make one clear, low-friction ask tied to the goal. No flattery, no "I hope this finds you well", no buzzwords, no emojis unless the tone asks.
+- The message must read as individually written by the user: open with the strongest specific connection, say who the user is in one clause, make one clear, low-friction ask tied to the goal. Never imply shared details the evidence doesn't show (e.g. "fellow student" for a graduate, or the same program when only the school matches). Describe the user's projects using only details present in the profile (don't add "open-source", metrics, or users that aren't stated for that project). No flattery, no "I hope this finds you well", no buzzwords, no emojis unless the tone asks.
 - ${CHANNEL_RULES[target.channel]}
 - followUp: a short follow-up for 5-7 days later that adds new value, not "just bumping".
 - asset: the single most useful supporting item, e.g. {type:"project", title:<which user project to link and why>, content:<2-3 sentence pitch>} or {type:"resume emphasis", ...}.

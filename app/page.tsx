@@ -63,7 +63,7 @@ function Workspace() {
           {m.profile ? (
             <button onClick={() => setView("setup")} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-muted">
               <Initials name={m.profile.name} className="size-7 text-[11px]" />
-              <span className="hidden text-left sm:block">
+              <span className="hidden text-left lg:block">
                 <span className="block text-sm leading-tight font-medium">{m.profile.name}</span>
                 <span className="block max-w-56 truncate text-xs leading-tight text-muted-foreground">{m.profile.headline}</span>
               </span>

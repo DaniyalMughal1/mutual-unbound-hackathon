@@ -62,9 +62,9 @@ export function LeadDetail({ lead }: { lead: Lead }) {
   return (
     <div ref={rootRef} className="mx-auto w-full max-w-4xl px-6 py-6">
       {/* Header */}
-      <div className="flex items-start gap-4">
+      <div className="flex flex-wrap items-start gap-4">
         <Initials name={lead.name} className="size-11 text-sm" />
-        <div className="min-w-0 flex-1">
+        <div className="min-w-[14rem] flex-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h2 className="text-xl font-semibold tracking-tight">{lead.name}</h2>
             <StatusPill status={lead.status} />
@@ -140,7 +140,7 @@ function PipelineTrace({ lead, act }: { lead: Lead; act?: Activity }) {
   ] as const;
 
   return (
-    <div className="mt-6 grid gap-6 md:grid-cols-[1fr_1fr]">
+    <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <ol className="space-y-3">
         {steps.map((s, i) => (
           <li key={i} className="flex items-center gap-3 text-sm">
@@ -228,7 +228,7 @@ function AnalysisView({ lead }: { lead: Lead }) {
 
       {/* Two-sided evidence */}
       <section>
-        <div data-reveal className="mb-2 grid grid-cols-[1fr_28px_1fr] items-end gap-3 px-1">
+        <div data-reveal className="mb-2 grid grid-cols-[minmax(0,1fr)_28px_minmax(0,1fr)] items-end gap-3 px-1">
           <SectionLabel>You</SectionLabel>
           <span />
           <SectionLabel>{lead.name.split(" ")[0]}</SectionLabel>
@@ -309,7 +309,7 @@ function AnalysisView({ lead }: { lead: Lead }) {
 
       {/* Research */}
       {r && (
-        <section data-reveal className="grid gap-6 md:grid-cols-[1.4fr_1fr]">
+        <section data-reveal className="grid gap-6 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
           <div>
             <SectionLabel>What we found</SectionLabel>
             <p className="mt-2 text-sm leading-relaxed">{r.summary}</p>
@@ -369,7 +369,7 @@ function ConnectionRow({ c }: { c: ConnectionPoint }) {
           {c.strength}
         </Badge>
       </div>
-      <div className="mt-2 grid grid-cols-[1fr_28px_1fr] items-start gap-3">
+      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_28px_minmax(0,1fr)] items-start gap-3">
         <p className="text-sm leading-relaxed text-foreground/85">{c.youEvidence}</p>
         <span data-link className="mt-0.5 grid size-7 place-items-center rounded-full bg-primary/10 text-primary">
           <Link2 className="size-3.5" />
@@ -377,7 +377,7 @@ function ConnectionRow({ c }: { c: ConnectionPoint }) {
         <p className="text-sm leading-relaxed text-foreground/85">
           {c.themEvidence}
           {c.sourceUrl && (
-            <a href={c.sourceUrl} target="_blank" rel="noreferrer" className="ml-1.5 whitespace-nowrap text-xs text-muted-foreground hover:underline">
+            <a href={c.sourceUrl} target="_blank" rel="noreferrer" className="ml-1.5 text-xs break-words text-muted-foreground hover:underline">
               {c.sourceTitle || domainOf(c.sourceUrl)} ↗
             </a>
           )}
@@ -439,7 +439,7 @@ function ActionButtons({ lead, onOpen, channelLabel }: { lead: Lead; onOpen: () 
 function Facts({ label, items }: { label: string; items: string[] }) {
   if (!items.length) return null;
   return (
-    <div className="grid grid-cols-[112px_1fr] gap-3">
+    <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-3">
       <dt className="text-muted-foreground">{label}</dt>
       <dd>
         <ul className="space-y-1">

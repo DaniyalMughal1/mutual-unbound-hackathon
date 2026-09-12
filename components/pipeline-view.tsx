@@ -37,11 +37,19 @@ function LeadCard({
   onAdvance?: { label: string; action: () => void };
 }) {
   return (
-    <button
-      type="button"
+    // A div with button semantics: the card contains its own action button, and buttons can't nest.
+    <div
+      role="button"
+      tabIndex={0}
       data-lead-card
       onClick={onOpen}
-      className="flex w-full flex-col items-start gap-1.5 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-foreground/20 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+      onKeyDown={(e) => {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="flex w-full cursor-pointer flex-col items-start gap-1.5 rounded-lg border border-border bg-card p-3 text-left transition-colors hover:border-foreground/20 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       <div className="flex w-full items-start justify-between gap-2">
         <div className="min-w-0">
@@ -84,7 +92,7 @@ function LeadCard({
           {onAdvance.label}
         </Button>
       )}
-    </button>
+    </div>
   );
 }
 

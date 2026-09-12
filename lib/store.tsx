@@ -181,9 +181,10 @@ function useMutualState() {
   }, [headers, setProfile]);
 
   const research = useCallback(
-    async (id: string) => {
+    async (id: string, known?: Lead) => {
       const { profile, target, leads } = stateRef.current;
-      const lead = leads.find((l) => l.id === id);
+      // Freshly discovered leads may not be committed to state yet, so callers can pass them in.
+      const lead = known ?? leads.find((l) => l.id === id);
       if (!lead || !profile) return;
       setActivity((a) => ({ ...a, [id]: { stage: "researching", searches: [] } }));
       patchLead(id, { status: "researching", error: undefined });
@@ -236,14 +237,13 @@ function useMutualState() {
         if (e.type === "error") throw new Error(e.message);
       });
       if (!found.length) throw new Error("No verifiable leads found. Try broadening the target.");
-      setState((s) => {
-        const existing = new Set(s.leads.map((l) => l.name.toLowerCase()));
-        const fresh = found.filter((l) => !existing.has(l.name.toLowerCase()));
-        return { ...s, leads: [...fresh, ...s.leads], selectedId: fresh[0]?.id ?? s.selectedId };
-      });
+      // People already in the list are skipped, so only new leads are added and researched.
+      const existing = new Set(stateRef.current.leads.map((l) => l.name.toLowerCase()));
+      const fresh = found.filter((l) => !existing.has(l.name.toLowerCase()));
+      setState((s) => ({ ...s, leads: [...fresh, ...s.leads], selectedId: fresh[0]?.id ?? s.selectedId }));
       setDiscovery((d) => ({ ...d, active: false, note: `Found ${found.length} people` }));
-      // Research the top two automatically, staggered to stay inside free-tier rate limits.
-      found.slice(0, 2).forEach((l, i) => setTimeout(() => void research(l.id), i * 1500));
+      // Research the top two new leads automatically, staggered to stay inside free-tier rate limits.
+      fresh.slice(0, 2).forEach((l, i) => setTimeout(() => void research(l.id, l), i * 1500));
     } catch (err) {
       if (err instanceof KeyNeeded) setKeyOpen(true);
       setDiscovery((d) => ({ ...d, active: false, error: err instanceof Error ? err.message : String(err) }));

@@ -112,7 +112,7 @@ export function LeadsView({ onGoSetup }: { onGoSetup: () => void }) {
         </ul>
       </aside>
 
-      <main className="min-h-0 flex-1 overflow-y-auto">
+      <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
         {selected ? (
           <LeadDetail key={selected.id} lead={selected} />
         ) : m.discovery.active ? (
