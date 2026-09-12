@@ -1,6 +1,7 @@
 import "server-only";
 import { ApiError, GoogleGenAI } from "@google/genai";
 import { z } from "zod";
+import { SearchError, tavilySearch, type SearchHit } from "./search";
 import type {
   ConnectionAnalysis,
   Lead,
@@ -10,14 +11,20 @@ import type {
   UserProfile,
 } from "./types";
 
-// ---------- Model access (bring your own Gemini key) ----------
+// ---------- Model + search access (bring your own keys) ----------
 
-export const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"] as const;
-export const DEFAULT_MODEL = "gemini-2.5-flash";
+// Gemini 2.5 models are closed to new API users; Google points new keys at the 3.x line.
+export const DEFAULT_MODEL = "gemini-3.6-flash";
+const MODEL_NAME = /^gemini-[a-z0-9.-]{1,48}$/;
 
 export interface LLM {
   ai: GoogleGenAI;
   model: string;
+}
+
+export interface Ctx {
+  llm: LLM;
+  tavilyKey?: string;
 }
 
 export class MissingKeyError extends Error {
@@ -26,13 +33,29 @@ export class MissingKeyError extends Error {
   }
 }
 
-// Key comes from the user's browser (x-gemini-key). A deployer can optionally set GEMINI_API_KEY instead.
+// Keys come from the user's browser (x-gemini-key / x-tavily-key). A deployer can optionally set them as env vars instead.
 export function llmFromRequest(request: Request): LLM {
-  const apiKey = request.headers.get("x-gemini-key")?.trim() || process.env.GEMINI_API_KEY;
+  const apiKey =
+    request.headers.get("x-gemini-key")?.trim() || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) throw new MissingKeyError();
   const requested = request.headers.get("x-gemini-model") ?? "";
-  const model = (MODELS as readonly string[]).includes(requested) ? requested : DEFAULT_MODEL;
+  const model = MODEL_NAME.test(requested) ? requested : DEFAULT_MODEL;
   return { ai: new GoogleGenAI({ apiKey }), model };
+}
+
+export function contextFromRequest(request: Request): Ctx {
+  return {
+    llm: llmFromRequest(request),
+    tavilyKey: request.headers.get("x-tavily-key")?.trim() || process.env.TAVILY_API_KEY || undefined,
+  };
+}
+
+// Which keys the server has configured. Booleans only; never the values.
+export function serverKeys() {
+  return {
+    gemini: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+    tavily: Boolean(process.env.TAVILY_API_KEY),
+  };
 }
 
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
@@ -41,7 +64,12 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } catch (err) {
-      const retryable = err instanceof ApiError && [429, 500, 503].includes(err.status);
+      // Only per-minute 429s clear on their own; zero-quota and plan/billing 429s never do.
+      const retryable =
+        err instanceof ApiError &&
+        (err.status === 500 ||
+          err.status === 503 ||
+          (err.status === 429 && /retryDelay|PerMinute/i.test(err.message) && !/limit:\s*0\b/.test(err.message)));
       if (!retryable || attempt >= delays.length) throw err;
       await new Promise((r) => setTimeout(r, delays[attempt]));
     }
@@ -90,31 +118,78 @@ async function jsonCall<T>(llm: LLM, opts: { system: string; prompt: string; sch
   return parsed.data;
 }
 
-interface Grounded {
+interface Findings {
   text: string;
   queries: string[];
   sources: SourceLink[];
+  numbered: boolean; // text cites sources as [n]
   supports: { text: string; chunks: number[] }[];
 }
 
-// Real web research: Gemini with Google Search grounding. Sources come from grounding metadata, not the model's prose.
-async function groundedSearch(llm: LLM, opts: { system: string; prompt: string }): Promise<Grounded> {
-  const res = await withRetry(() =>
-    llm.ai.models.generateContent({
-      model: llm.model,
-      contents: opts.prompt,
-      config: { systemInstruction: opts.system, tools: [{ googleSearch: {} }], temperature: 0.3 },
-    }),
-  );
+// Search source 1: Tavily web search. Queries run in parallel; results are interleaved so every query contributes.
+async function webResearch(
+  ctx: Ctx,
+  queries: string[],
+  onSearch: ((q: string) => void) | undefined,
+  perQuery: number,
+): Promise<Findings> {
+  queries.forEach((q) => onSearch?.(q));
+  const settled = await Promise.allSettled(queries.map((q) => tavilySearch(ctx.tavilyKey!, q, perQuery)));
+  const batches = settled.flatMap((s) => (s.status === "fulfilled" ? [s.value] : []));
+  if (!batches.length) {
+    const failure = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
+    throw failure?.reason ?? new SearchError("Web search returned nothing.");
+  }
+  const seen = new Set<string>();
+  const hits: SearchHit[] = [];
+  for (let i = 0; i < perQuery; i++) {
+    for (const batch of batches) {
+      const h = batch[i];
+      if (h && !seen.has(h.url)) {
+        seen.add(h.url);
+        hits.push(h);
+      }
+    }
+  }
+  const top = hits.slice(0, 12);
+  return {
+    text: top.map((h, i) => `[${i}] ${h.title} (${h.url})\n${h.content}`).join("\n\n"),
+    queries,
+    sources: top.map((h) => ({ title: h.title, url: h.url })),
+    numbered: true,
+    supports: [],
+  };
+}
+
+// Search source 2: Gemini Google Search grounding (requires a billed Gemini key for 3.x models).
+async function groundedSearch(llm: LLM, opts: { system: string; prompt: string }): Promise<Findings> {
+  let res;
+  try {
+    res = await withRetry(() =>
+      llm.ai.models.generateContent({
+        model: llm.model,
+        contents: opts.prompt,
+        config: { systemInstruction: opts.system, tools: [{ googleSearch: {} }], temperature: 0.3 },
+      }),
+    );
+  } catch (err) {
+    // Gemini 3.x free tier has no Search grounding: it answers with a bare quota 429 that names no metric.
+    if (err instanceof ApiError && err.status === 429 && !/quotaMetric|retryDelay/i.test(err.message)) {
+      throw new Error(
+        "Live search isn't available: add a free Tavily key in API key settings, or enable billing on the Gemini key (Google Search grounding isn't on the free tier).",
+      );
+    }
+    throw err;
+  }
   const meta = res.candidates?.[0]?.groundingMetadata;
-  const sources: SourceLink[] = (meta?.groundingChunks ?? []).map((c) => ({
-    title: c.web?.title || c.web?.domain || "Source",
-    url: c.web?.uri ?? "",
-  }));
   return {
     text: res.text ?? "",
     queries: meta?.webSearchQueries ?? [],
-    sources,
+    sources: (meta?.groundingChunks ?? []).map((c) => ({
+      title: c.web?.title || c.web?.domain || "Source",
+      url: c.web?.uri ?? "",
+    })),
+    numbered: false,
     supports: (meta?.groundingSupports ?? []).map((s) => ({
       text: s.segment?.text ?? "",
       chunks: s.groundingChunkIndices ?? [],
@@ -136,6 +211,8 @@ const UserProfileSchema = z.object({
   notable: z.array(z.string()),
 });
 
+const QueryPlanSchema = z.object({ queries: z.array(z.string()) });
+
 const DiscoverySchema = z.object({
   leads: z.array(
     z.object({
@@ -144,6 +221,7 @@ const DiscoverySchema = z.object({
       company: z.string(),
       location: z.string(),
       whyTarget: z.string(),
+      sourceIndices: z.array(z.number()),
     }),
   ),
 });
@@ -227,31 +305,45 @@ export async function buildProfile(llm: LLM, raw: string): Promise<UserProfile> 
 // ---------- 2. Discover leads ----------
 
 export async function discoverLeads(
-  llm: LLM,
+  ctx: Ctx,
   profile: UserProfile,
   target: TargetSpec,
   onSearch?: (q: string) => void,
 ): Promise<Lead[]> {
   const count = Math.min(Math.max(target.count || 5, 1), 8);
-  const found = await groundedSearch(llm, {
-    system: `You are the lead-discovery stage of a two-sided outreach agent. Use Google Search to find real, currently identifiable people matching the user's target. Prefer people where the user's own background gives a genuine reason to connect (shared school, overlapping technical work, public statements about hiring students). ${ETHICS}`,
-    prompt: `${profileBlock(profile)}\n\n${targetBlock(target)}\n\nFind up to ${count} specific people. For each, write a short paragraph starting with their full name that states their current role, company, location, and the concrete facts from search that make them a match.`,
-  });
-  found.queries.forEach((q) => onSearch?.(q));
+  let found: Findings;
 
-  const { leads } = await jsonCall(llm, {
+  if (ctx.tavilyKey) {
+    const plan = await jsonCall(ctx.llm, {
+      system: `You plan web searches for the lead-discovery stage of an outreach agent. Write queries that surface pages naming specific people who match the target: company team or about pages, funding announcements, accelerator batch lists, university startup directories, conference speaker pages, local tech news. ${ETHICS}`,
+      prompt: `${profileBlock(profile)}\n\n${targetBlock(target)}\n\nWrite 4 distinct web search queries, each under 12 words. Favor queries whose results name founders or technical leaders, not generic listicles.`,
+      schema: QueryPlanSchema,
+    });
+    found = await webResearch(ctx, plan.queries.slice(0, 4), onSearch, 6);
+  } else {
+    found = await groundedSearch(ctx.llm, {
+      system: `You are the lead-discovery stage of a two-sided outreach agent. Use Google Search to find real, currently identifiable people matching the user's target. Prefer people where the user's own background gives a genuine reason to connect. ${ETHICS}`,
+      prompt: `${profileBlock(profile)}\n\n${targetBlock(target)}\n\nFind up to ${count} specific people. For each, write a short paragraph starting with their full name that states their current role, company, location, and the concrete facts from search that make them a match.`,
+    });
+    found.queries.forEach((q) => onSearch?.(q));
+  }
+
+  const { leads } = await jsonCall(ctx.llm, {
     system: `Extract outreach leads from web search findings. Only include people explicitly named in the findings with a role and company. ${ETHICS}`,
-    prompt: `<findings>\n${found.text}\n</findings>\n\nReturn up to ${count} leads. whyTarget: one sentence on how they match this target: ${target.description}. location: "" if unknown.`,
+    prompt: `<findings>\n${found.text}\n</findings>\n\nReturn up to ${count} leads matching this target: ${target.description}. Prefer people with a genuine reason to talk to this user: ${profile.headline}. whyTarget: one sentence on how they match, citing what the findings say. location: "" if unknown. sourceIndices: the [n] numbers of the findings that mention this person${found.numbered ? "" : " (use [] because these findings are not numbered)"}.`,
     schema: DiscoverySchema,
   });
 
   const now = Date.now();
   return leads.slice(0, count).map((l, i) => {
-    const first = l.name.split(" ")[0].toLowerCase();
-    const idx = new Set(
-      found.supports.filter((s) => s.text.toLowerCase().includes(first)).flatMap((s) => s.chunks),
-    );
-    const sources = [...idx].map((n) => found.sources[n]).filter((s): s is SourceLink => Boolean(s?.url));
+    let sources: SourceLink[];
+    if (found.numbered) {
+      sources = l.sourceIndices.map((n) => found.sources[n]).filter((s): s is SourceLink => Boolean(s?.url));
+    } else {
+      const first = l.name.split(" ")[0].toLowerCase();
+      const idx = new Set(found.supports.filter((s) => s.text.toLowerCase().includes(first)).flatMap((s) => s.chunks));
+      sources = [...idx].map((n) => found.sources[n]).filter((s): s is SourceLink => Boolean(s?.url));
+    }
     return {
       id: `${now.toString(36)}-${i}-${slug(l.name)}`,
       name: l.name,
@@ -261,22 +353,31 @@ export async function discoverLeads(
       whyTarget: l.whyTarget,
       profileUrl: profileSearchUrl(l.name, l.company, target.channel),
       sources: dedupe(sources).slice(0, 5),
-      source: "gemini-google-search",
+      source: ctx.tavilyKey ? "tavily-web-search" : "gemini-google-search",
       status: "discovered" as const,
       updatedAt: now,
     };
   });
 }
 
-// ---------- 3. Research one lead (grounded) ----------
+// ---------- 3. Research one lead ----------
 
 export async function researchLead(
-  llm: LLM,
+  ctx: Ctx,
   lead: Pick<Lead, "name" | "role" | "company">,
   target: TargetSpec,
   onSearch?: (q: string) => void,
-): Promise<Grounded> {
-  const found = await groundedSearch(llm, {
+): Promise<Findings> {
+  if (ctx.tavilyKey) {
+    const who = `"${lead.name}"`;
+    return webResearch(
+      ctx,
+      [`${who} ${lead.company}`, `${who} interview OR podcast OR talk OR blog`, `${lead.company} startup funding product news`],
+      onSearch,
+      5,
+    );
+  }
+  const found = await groundedSearch(ctx.llm, {
     system: `You are the research stage of an outreach agent. Build a concise public dossier on ONE person so a message to them can be specific. ${ETHICS} Never guess personal emails.`,
     prompt: `Research ${lead.name}, ${lead.role} at ${lead.company}. Outreach goal for context: ${target.goal}.\n\nCover, with dates where known: education; career path; what their company does right now; recent activity (posts, launches, talks, funding, hiring of students or interns); stated interests; public ways to contact them (e.g. LinkedIn, team page).`,
   });
@@ -298,26 +399,27 @@ export async function analyzeConnection(
   profile: UserProfile,
   target: TargetSpec,
   lead: Pick<Lead, "name" | "role" | "company" | "whyTarget">,
-  findings: Grounded,
+  findings: Findings,
 ): Promise<{ research: LeadResearch; analysis: ConnectionAnalysis }> {
-  const sources = dedupe([...findings.sources]).slice(0, 12);
+  // Findings sources are already unique and capped, so [n] in the findings text lines up with this list.
+  const sources = findings.sources.slice(0, 12);
   const numbered = sources.map((s, i) => `[${i}] ${s.title}`).join("\n");
   const out = await jsonCall(llm, {
     system: `You are the connection engine of a two-sided outreach agent. You see who the USER is and who the LEAD is, and you decide why these two people should talk.
 
-First, "research": structure the web findings about the lead into a dossier (bullets under 25 words). contactHints: public channels only.
+First, "research": structure the web findings about the lead into a dossier (bullets under 25 words). Search results can include other people with the same name: only use findings that clearly match this lead's company or role. contactHints: public channels only.
 
 Then, "analysis":
 - A connection is only valid if it is supported on BOTH sides: youEvidence must come from the user profile, themEvidence from the findings. Quote or tightly paraphrase. Never invent.
 - Rank connections strongest first, 2-4 of them. Specific overlaps (same technical problem, same school program, something they said that the user's work answers) beat generic ones (both like AI). Mark generic ones "weak".
 - sourceIndex: the number of the source backing themEvidence, or -1.
-- fitScore (0-100) must be justified by the connections; weak evidence means a low score.
+- fitScore (0-100) must be justified by the connections; weak or thin evidence means a low score.
 - headline: the strongest genuine connection in one sentence, phrased to the user ("You both...").
 - The message must read as individually written by the user: open with the strongest specific connection, say who the user is in one clause, make one clear, low-friction ask tied to the goal. No flattery, no "I hope this finds you well", no buzzwords, no emojis unless the tone asks.
 - ${CHANNEL_RULES[target.channel]}
 - followUp: a short follow-up for 5-7 days later that adds new value, not "just bumping".
 - asset: the single most useful supporting item, e.g. {type:"project", title:<which user project to link and why>, content:<2-3 sentence pitch>} or {type:"resume emphasis", ...}.
-- risks: honest caveats (stale info, weak overlap, may not be hiring).`,
+- risks: honest caveats (stale info, weak overlap, may not be hiring, possible name mix-ups).`,
     prompt: `${profileBlock(profile)}\n\n${targetBlock(target)}\n\n<lead>\n${JSON.stringify(lead, null, 2)}\n</lead>\n\n<findings>\n${findings.text}\n</findings>\n\n<sources>\n${numbered || "(none)"}\n</sources>`,
     schema: DossierSchema,
   });
@@ -350,12 +452,20 @@ function dedupe(list: SourceLink[]) {
 }
 
 export function errorMessage(err: unknown): string {
-  if (err instanceof MissingKeyError) return err.message;
+  if (err instanceof MissingKeyError || err instanceof SearchError) return err.message;
   if (err instanceof ApiError) {
+    console.error(`[gemini] ${err.status}: ${err.message.slice(0, 900)}`);
     if (err.status === 400 && /api key/i.test(err.message)) return "That Gemini API key isn't valid. Check it in API key settings.";
     if (err.status === 403) return "This Gemini API key doesn't have access. Check it in Google AI Studio.";
-    if (err.status === 404) return "That Gemini model isn't available for this key. Pick another model in API key settings.";
-    if (err.status === 429) return "Gemini rate limit reached (free tier). Wait a minute and retry, or research fewer people at once.";
+    if (err.status === 404)
+      return `That Gemini model isn't available for this key. Pick another model in API key settings. (${err.message.slice(0, 160)})`;
+    if (err.status === 429) {
+      const metric = err.message.match(/quotaMetric[^a-z]+([a-z_/.]+)/i)?.[1];
+      const zero = /limit:\s*0\b/.test(err.message);
+      return zero
+        ? `This Gemini model has no free-tier quota for this key${metric ? ` (${metric})` : ""}. Pick a Flash model in API key settings.`
+        : `Gemini rate limit reached${metric ? ` (${metric})` : ""}. Wait a minute and retry, or research fewer people at once.`;
+    }
     if (err.status === 503) return "Gemini is overloaded right now. Retry in a few seconds.";
     return `Gemini API error ${err.status}: ${err.message.slice(0, 200)}`;
   }

@@ -38,7 +38,7 @@ const EMPTY_TARGET: TargetSpec = {
 
 const STORAGE_KEY = "mutual:v1";
 const KEY_STORAGE = "mutual:gemini";
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.6-flash";
 
 class KeyNeeded extends Error {}
 
@@ -77,6 +77,8 @@ function useMutualState() {
   const [hydrated, setHydrated] = useState(false);
   const [apiKey, setApiKeyState] = useState("");
   const [model, setModelState] = useState(DEFAULT_MODEL);
+  const [tavilyKey, setTavilyKeyState] = useState("");
+  const [serverKeys, setServerKeys] = useState({ gemini: false, tavily: false });
   const [keyOpen, setKeyOpen] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
@@ -87,8 +89,8 @@ function useMutualState() {
   const [activity, setActivity] = useState<Record<string, Activity>>({});
   const stateRef = useRef(state);
   stateRef.current = state;
-  const keyRef = useRef({ apiKey, model });
-  keyRef.current = { apiKey, model };
+  const keyRef = useRef({ apiKey, model, tavilyKey });
+  keyRef.current = { apiKey, model, tavilyKey };
 
   useEffect(() => {
     try {
@@ -99,10 +101,16 @@ function useMutualState() {
         parsed.leads = parsed.leads.map((l) => (l.status === "researching" ? { ...l, status: l.analysis ? "ready" : "discovered" } : l));
         setState({ ...parsed, target: { ...EMPTY_TARGET, ...parsed.target } });
       }
-      const k = JSON.parse(localStorage.getItem(KEY_STORAGE) ?? "{}") as { apiKey?: string; model?: string };
+      const k = JSON.parse(localStorage.getItem(KEY_STORAGE) ?? "{}") as { apiKey?: string; model?: string; tavilyKey?: string };
       if (k.apiKey) setApiKeyState(k.apiKey);
-      if (k.model) setModelState(k.model);
+      if (k.tavilyKey) setTavilyKeyState(k.tavilyKey);
+      // Gemini 2.5 models are closed to new API users, so older saved choices fall back to the default.
+      if (k.model && !k.model.startsWith("gemini-2.5")) setModelState(k.model);
     } catch {}
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then(setServerKeys)
+      .catch(() => {});
     setHydrated(true);
   }, []);
 
@@ -116,13 +124,14 @@ function useMutualState() {
   useEffect(() => {
     if (!hydrated) return;
     try {
-      localStorage.setItem(KEY_STORAGE, JSON.stringify({ apiKey, model }));
+      localStorage.setItem(KEY_STORAGE, JSON.stringify({ apiKey, model, tavilyKey }));
     } catch {}
-  }, [apiKey, model, hydrated]);
+  }, [apiKey, model, tavilyKey, hydrated]);
 
   const headers = useCallback((): HeadersInit => {
     const h: Record<string, string> = { "Content-Type": "application/json", "x-gemini-model": keyRef.current.model };
     if (keyRef.current.apiKey) h["x-gemini-key"] = keyRef.current.apiKey;
+    if (keyRef.current.tavilyKey) h["x-tavily-key"] = keyRef.current.tavilyKey;
     return h;
   }, []);
 
@@ -144,6 +153,7 @@ function useMutualState() {
   const select = useCallback((selectedId: string | null) => setState((s) => ({ ...s, selectedId })), []);
   const setApiKey = useCallback((k: string) => setApiKeyState(k), []);
   const setModel = useCallback((mdl: string) => setModelState(mdl), []);
+  const setTavilyKey = useCallback((k: string) => setTavilyKeyState(k), []);
 
   const buildProfile = useCallback(async () => {
     setProfileLoading(true);
@@ -259,6 +269,8 @@ function useMutualState() {
       ...state,
       hydrated,
       apiKey,
+      tavilyKey,
+      serverKeys,
       model,
       keyOpen,
       profileLoading,
@@ -266,6 +278,7 @@ function useMutualState() {
       discovery,
       activity,
       setApiKey,
+      setTavilyKey,
       setModel,
       setKeyOpen,
       setProfileRaw,
@@ -279,7 +292,7 @@ function useMutualState() {
       updateMessage,
       reset,
     }),
-    [state, hydrated, apiKey, model, keyOpen, profileLoading, profileError, discovery, activity, setApiKey, setModel, setProfileRaw, setProfile, setTarget, select, buildProfile, discover, research, setStatus, updateMessage, reset],
+    [state, hydrated, apiKey, tavilyKey, serverKeys, model, keyOpen, setTavilyKey, profileLoading, profileError, discovery, activity, setApiKey, setModel, setProfileRaw, setProfile, setTarget, select, buildProfile, discover, research, setStatus, updateMessage, reset],
   );
 }
 

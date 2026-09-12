@@ -1,10 +1,10 @@
 import {
   MissingKeyError,
   analyzeConnection,
+  contextFromRequest,
   errorMessage,
-  llmFromRequest,
   researchLead,
-  type LLM,
+  type Ctx,
 } from "@/lib/pipeline";
 import { ndjsonResponse } from "@/lib/ndjson";
 import type { Lead, ResearchEvent, TargetSpec, UserProfile } from "@/lib/types";
@@ -12,9 +12,9 @@ import type { Lead, ResearchEvent, TargetSpec, UserProfile } from "@/lib/types";
 export const maxDuration = 120;
 
 export async function POST(request: Request) {
-  let llm: LLM;
+  let ctx: Ctx;
   try {
-    llm = llmFromRequest(request);
+    ctx = contextFromRequest(request);
   } catch (err) {
     const missing = err instanceof MissingKeyError;
     return Response.json({ error: errorMessage(err), code: missing ? "missing_key" : undefined }, { status: missing ? 401 : 500 });
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   return ndjsonResponse<ResearchEvent>(async (send) => {
     try {
       send({ type: "stage", stage: "researching", note: `Researching ${lead.name}` });
-      const findings = await researchLead(llm, lead, target, (query) => send({ type: "search", query }));
+      const findings = await researchLead(ctx, lead, target, (query) => send({ type: "search", query }));
       // Preliminary dossier so the UI can show sources while the connection engine runs.
       send({
         type: "research",
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
         },
       });
       send({ type: "stage", stage: "connecting", note: "Comparing their context with yours" });
-      const { research, analysis } = await analyzeConnection(llm, profile, target, lead, findings);
+      const { research, analysis } = await analyzeConnection(ctx.llm, profile, target, lead, findings);
       send({ type: "research", research });
       send({ type: "analysis", analysis });
       send({ type: "done" });
