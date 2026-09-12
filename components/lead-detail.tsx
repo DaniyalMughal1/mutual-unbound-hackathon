@@ -252,7 +252,7 @@ function AnalysisView({ lead }: { lead: Lead }) {
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <span className="text-xs text-muted-foreground">Leading with:</span>
             {a.relevantOfYou.map((x, i) => (
-              <Badge key={i} variant="secondary" className="font-normal">
+              <Badge key={i} variant="secondary" className="h-auto max-w-full text-left font-normal whitespace-normal">
                 {x}
               </Badge>
             ))}

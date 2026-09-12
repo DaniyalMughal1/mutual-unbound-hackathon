@@ -32,7 +32,7 @@ function ChipRow({ items }: { items: string[] }) {
   return (
     <div className="flex flex-wrap gap-1.5">
       {items.map((item, i) => (
-        <Badge key={i} variant="secondary" className="rounded-md font-normal">
+        <Badge key={i} variant="secondary" className="h-auto max-w-full rounded-md text-left font-normal whitespace-normal">
           {item}
         </Badge>
       ))}
@@ -88,7 +88,7 @@ function ProfileSummary({ profile }: { profile: UserProfile }) {
           <span className="text-xs text-muted-foreground">—</span>
         )}
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <SectionLabel>Skills</SectionLabel>
           <ChipRow items={profile.skills} />
@@ -97,10 +97,18 @@ function ProfileSummary({ profile }: { profile: UserProfile }) {
           <SectionLabel>Interests</SectionLabel>
           <ChipRow items={profile.interests} />
         </div>
-        <div className="space-y-1">
-          <SectionLabel>Goals</SectionLabel>
-          <ChipRow items={profile.goals} />
-        </div>
+      </div>
+      <div className="space-y-1">
+        <SectionLabel>Goals</SectionLabel>
+        {profile.goals.length ? (
+          <ul className="space-y-0.5 text-[13px] text-foreground">
+            {profile.goals.map((g, i) => (
+              <li key={i}>{g}</li>
+            ))}
+          </ul>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
       </div>
     </div>
   );

@@ -62,10 +62,17 @@ export function LeadsView({ onGoSetup }: { onGoSetup: () => void }) {
               <div className="flex items-start gap-2 text-sm text-destructive">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                 <div className="flex-1">
-                  {m.discovery.error}
-                  <Button size="sm" variant="link" className="h-auto px-0" onClick={() => void m.discover()}>
-                    Try again
-                  </Button>
+                  <p>{m.discovery.error}</p>
+                  <div className="mt-1.5 flex flex-wrap gap-3">
+                    <Button size="sm" variant="link" className="h-auto px-0" onClick={() => void m.discover()}>
+                      Try again
+                    </Button>
+                    {/key/i.test(m.discovery.error ?? "") && (
+                      <Button size="sm" variant="link" className="h-auto px-0" onClick={() => m.setKeyOpen(true)}>
+                        Open key settings
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
